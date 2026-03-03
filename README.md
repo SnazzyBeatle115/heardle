@@ -19,13 +19,13 @@ Heardle-style web app where players guess Conan Gray songs from short SoundCloud
 npm install
 ```
 
-2. Configure environment variables:
+1. Configure environment variables:
 
 ```bash
 copy .env.example .env.local
 ```
 
-3. Start the app:
+1. Start the app:
 
 ```bash
 npm run dev
@@ -38,6 +38,7 @@ Open [http://localhost:3000](http://localhost:3000).
 - `HEARDLE_TOKEN_SECRET` (required in production): secret used to sign puzzle tokens.
 - `HEARDLE_SONG_PROVIDER` (optional): `static` (default), `soundcloud`, or `spotify`.
 - `HEARDLE_SOUNDCLOUD_CLIENT_ID` (required when provider is `soundcloud`): SoundCloud API client id.
+- `HEARDLE_SOUNDCLOUD_CLIENT_SECRET` (required when provider is `soundcloud`): SoundCloud API client secret used for client-credentials token exchange.
 - `HEARDLE_SOUNDCLOUD_CACHE_TTL_MS` (optional): server cache duration for fetched SoundCloud tracks.
 - `HEARDLE_SOUNDCLOUD_*_PERMALINK` (optional): override artist profile permalink used for track discovery.
 
@@ -47,7 +48,7 @@ The curated song list is in `src/lib/songs.ts`.
 
 API routes now read songs through `src/lib/song-provider.ts`, which currently defaults to the static catalog and is ready for a Spotify-backed provider implementation.
 
-When `HEARDLE_SONG_PROVIDER=soundcloud`, the app fetches all public tracks from each configured artist profile (via SoundCloud API pagination) and falls back to the static catalog if SoundCloud is unavailable.
+When `HEARDLE_SONG_PROVIDER=soundcloud`, the app authenticates with SoundCloud Client Credentials flow, fetches public tracks from each configured artist profile (via API pagination), and falls back to the static catalog if SoundCloud is unavailable.
 
 - Replace or tune `soundcloudUrl` entries with confirmed playable Conan Gray tracks.
 - Adjust `previewStartMs` to pick better snippets.

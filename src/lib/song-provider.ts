@@ -15,8 +15,10 @@ import {
 
 type Awaitable<T> = T | Promise<T>;
 
+export type SongProviderId = "static" | "spotify" | "soundcloud";
+
 export type SongProvider = {
-    id: "static" | "spotify" | "soundcloud";
+    id: SongProviderId;
     getSongById: (songId: string) => Awaitable<Song | undefined>;
     isCorrectGuess: (song: Song, guess: string) => Awaitable<boolean>;
     getCatalogTitles: (artists?: ArtistId[]) => Awaitable<string[]>;
@@ -52,9 +54,11 @@ const ARTIST_LABEL_BY_ID = new Map(ARTIST_OPTIONS.map((option) => [option.id, op
 const SOUNDCLOUD_CACHE_TTL_MS = Number.parseInt(process.env.HEARDLE_SOUNDCLOUD_CACHE_TTL_MS ?? "900000", 10);
 const SOUNDCLOUD_DEFAULT_PREVIEW_START_MS = 12000;
 const SOUNDCLOUD_END_BUFFER_MS = 20000;
+const SOUNDCLOUD_API_BASE = "https://api.soundcloud.com";
 
 type SoundCloudResolveResponse = {
     id: number;
+    urn?: string;
     permalink?: string;
 };
 
@@ -77,6 +81,17 @@ type CachedSongs = {
 
 type SoundCloudProviderOptions = {
     clientId: string;
+    clientSecret: string;
+};
+
+type SoundCloudTokenResponse = {
+    access_token?: string;
+    expires_in?: number;
+};
+
+type SoundCloudToken = {
+    accessToken: string;
+    expiresAt: number;
 };
 
 function getSoundCloudPermalink(artist: ArtistId): string {
@@ -85,18 +100,36 @@ function getSoundCloudPermalink(artist: ArtistId): string {
     return override?.trim() || DEFAULT_SOUNDCLOUD_PERMALINKS[artist];
 }
 
-function withClientId(url: string, clientId: string): string {
-    const parsed = new URL(url);
+async function fetchSoundCloudAccessToken(clientId: string, clientSecret: string): Promise<SoundCloudToken> {
+    const basic = Buffer.from(`${clientId}:${clientSecret}`, "utf8").toString("base64");
+    const response = await fetch("https://secure.soundcloud.com/oauth/token", {
+        method: "POST",
+        headers: {
+            Accept: "application/json; charset=utf-8",
+            "Content-Type": "application/x-www-form-urlencoded",
+            Authorization: `Basic ${basic}`,
+        },
+        body: new URLSearchParams({
+            grant_type: "client_credentials",
+        }),
+        cache: "no-store",
+    });
 
-    if (!parsed.searchParams.has("client_id")) {
-        parsed.searchParams.set("client_id", clientId);
+    if (!response.ok) {
+        throw new Error(`SoundCloud token request failed (${response.status})`);
     }
 
-    if (!parsed.searchParams.has("linked_partitioning")) {
-        parsed.searchParams.set("linked_partitioning", "1");
+    const payload = (await response.json()) as SoundCloudTokenResponse;
+
+    if (!payload.access_token) {
+        throw new Error("SoundCloud token response missing access_token");
     }
 
-    return parsed.toString();
+    const expiresInSeconds = payload.expires_in && payload.expires_in > 0 ? payload.expires_in : 3600;
+    return {
+        accessToken: payload.access_token,
+        expiresAt: Date.now() + expiresInSeconds * 1000,
+    };
 }
 
 function toPreviewStartMs(durationMs?: number): number {
@@ -147,15 +180,33 @@ function pickRandomFromSongs(songs: Song[], excludeSongId?: string): Song {
 
 function createSoundCloudSongProvider(options: SoundCloudProviderOptions): SongProvider {
     const cache = new Map<string, CachedSongs>();
-    const artistUserIdCache = new Map<ArtistId, number>();
+    const artistUserRefCache = new Map<ArtistId, { id: number; urn?: string }>();
+    let token: SoundCloudToken | null = null;
+
+    async function getAccessToken(forceRefresh = false): Promise<string> {
+        if (!forceRefresh && token && token.expiresAt > Date.now() + 30_000) {
+            return token.accessToken;
+        }
+
+        token = await fetchSoundCloudAccessToken(options.clientId, options.clientSecret);
+        return token.accessToken;
+    }
 
     async function fetchJson<T>(url: string): Promise<T> {
-        const response = await fetch(url, {
-            headers: {
-                Accept: "application/json",
-            },
-            cache: "no-store",
-        });
+        const call = async (accessToken: string) =>
+            fetch(url, {
+                headers: {
+                    Accept: "application/json",
+                    Authorization: `OAuth ${accessToken}`,
+                },
+                cache: "no-store",
+            });
+
+        let response = await call(await getAccessToken());
+
+        if (response.status === 401 || response.status === 403) {
+            response = await call(await getAccessToken(true));
+        }
 
         if (!response.ok) {
             throw new Error(`SoundCloud request failed (${response.status})`);
@@ -164,18 +215,17 @@ function createSoundCloudSongProvider(options: SoundCloudProviderOptions): SongP
         return (await response.json()) as T;
     }
 
-    async function resolveArtistUserId(artist: ArtistId): Promise<number> {
-        const cached = artistUserIdCache.get(artist);
+    async function resolveArtistUser(artist: ArtistId): Promise<{ id: number; urn?: string }> {
+        const cached = artistUserRefCache.get(artist);
 
         if (cached) {
-            return cached;
+            return { ...cached };
         }
 
         const permalink = getSoundCloudPermalink(artist);
         const profileUrl = `https://soundcloud.com/${permalink}`;
-        const resolveUrl = new URL("https://api-v2.soundcloud.com/resolve");
+        const resolveUrl = new URL(`${SOUNDCLOUD_API_BASE}/resolve`);
         resolveUrl.searchParams.set("url", profileUrl);
-        resolveUrl.searchParams.set("client_id", options.clientId);
 
         const resolved = await fetchJson<SoundCloudResolveResponse>(resolveUrl.toString());
 
@@ -183,34 +233,55 @@ function createSoundCloudSongProvider(options: SoundCloudProviderOptions): SongP
             throw new Error(`Could not resolve SoundCloud artist ${artist}`);
         }
 
-        artistUserIdCache.set(artist, resolved.id);
-        return resolved.id;
+        const user = {
+            id: resolved.id,
+            urn: resolved.urn,
+        };
+
+        artistUserRefCache.set(artist, user);
+        return user;
     }
 
     async function fetchArtistTracks(artist: ArtistId): Promise<Song[]> {
-        const userId = await resolveArtistUserId(artist);
-        const firstPage = new URL(`https://api-v2.soundcloud.com/users/${userId}/tracks`);
-        firstPage.searchParams.set("client_id", options.clientId);
+        const user = await resolveArtistUser(artist);
+        const encodedUserRef = encodeURIComponent(user.urn ?? String(user.id));
+        const firstPage = new URL(`${SOUNDCLOUD_API_BASE}/users/${encodedUserRef}/tracks`);
         firstPage.searchParams.set("limit", "200");
         firstPage.searchParams.set("linked_partitioning", "1");
 
         const trackMap = new Map<string, Song>();
         let nextUrl: string | undefined = firstPage.toString();
 
-        while (nextUrl) {
-            const page: SoundCloudTracksResponse = await fetchJson<SoundCloudTracksResponse>(
-                withClientId(nextUrl, options.clientId)
-            );
+        async function collectTracksFrom(startUrl: string): Promise<void> {
+            nextUrl = startUrl;
 
-            for (const track of page.collection ?? []) {
-                const mapped = parseSoundCloudTrackToSong(track, artist);
+            while (nextUrl) {
+                const page: SoundCloudTracksResponse = await fetchJson<SoundCloudTracksResponse>(nextUrl);
 
-                if (mapped) {
-                    trackMap.set(mapped.id, mapped);
+                for (const track of page.collection ?? []) {
+                    const mapped = parseSoundCloudTrackToSong(track, artist);
+
+                    if (mapped) {
+                        trackMap.set(mapped.id, mapped);
+                    }
                 }
+
+                nextUrl = page.next_href;
+            }
+        }
+
+        try {
+            await collectTracksFrom(firstPage.toString());
+        } catch {
+            if (!user.urn) {
+                throw new Error(`Could not fetch SoundCloud tracks for artist ${artist}`);
             }
 
-            nextUrl = page.next_href;
+            const fallbackUrl = new URL(`${SOUNDCLOUD_API_BASE}/users/${user.id}/tracks`);
+            fallbackUrl.searchParams.set("limit", "200");
+            fallbackUrl.searchParams.set("linked_partitioning", "1");
+            trackMap.clear();
+            await collectTracksFrom(fallbackUrl.toString());
         }
 
         return sortSongsByTitle([...trackMap.values()]);
@@ -323,6 +394,104 @@ function resolveProviderId(): "static" | "spotify" | "soundcloud" {
     return "static";
 }
 
+type SoundCloudConnectivity = {
+    connected: boolean;
+    error: string | null;
+};
+
+async function checkSoundCloudConnectivity(clientId: string): Promise<SoundCloudConnectivity> {
+    try {
+        const token = await fetchSoundCloudAccessToken(clientId, process.env.HEARDLE_SOUNDCLOUD_CLIENT_SECRET?.trim() ?? "");
+        const conanPermalink = getSoundCloudPermalink("conan-gray");
+        const resolveUrl = new URL(`${SOUNDCLOUD_API_BASE}/resolve`);
+        resolveUrl.searchParams.set("url", `https://soundcloud.com/${conanPermalink}`);
+
+        const response = await fetch(resolveUrl.toString(), {
+            headers: {
+                Accept: "application/json",
+                Authorization: `OAuth ${token.accessToken}`,
+            },
+            cache: "no-store",
+        });
+
+        if (!response.ok) {
+            return {
+                connected: false,
+                error: `SoundCloud API status ${response.status}`,
+            };
+        }
+
+        const payload = (await response.json()) as { id?: number };
+
+        if (!payload?.id) {
+            return {
+                connected: false,
+                error: "SoundCloud resolve returned no user id",
+            };
+        }
+
+        return {
+            connected: true,
+            error: null,
+        };
+    } catch (error) {
+        return {
+            connected: false,
+            error: error instanceof Error ? error.message : "Unknown SoundCloud connectivity error",
+        };
+    }
+}
+
+export type SongProviderDebugInfo = {
+    requestedProvider: string;
+    activeProvider: SongProviderId;
+    soundcloudClientIdConfigured: boolean;
+    soundcloudClientSecretConfigured: boolean;
+    soundcloudConnected: boolean | null;
+    soundcloudError: string | null;
+};
+
+export async function getSongProviderDebugInfo(): Promise<SongProviderDebugInfo> {
+    const requestedProvider = process.env.HEARDLE_SONG_PROVIDER ?? "static";
+    const activeProvider = getSongProvider().id;
+    const clientId = process.env.HEARDLE_SOUNDCLOUD_CLIENT_ID?.trim();
+    const clientSecret = process.env.HEARDLE_SOUNDCLOUD_CLIENT_SECRET?.trim();
+    const soundcloudClientIdConfigured = Boolean(clientId);
+    const soundcloudClientSecretConfigured = Boolean(clientSecret);
+
+    if (requestedProvider !== "soundcloud") {
+        return {
+            requestedProvider,
+            activeProvider,
+            soundcloudClientIdConfigured,
+            soundcloudClientSecretConfigured,
+            soundcloudConnected: null,
+            soundcloudError: null,
+        };
+    }
+
+    if (!clientId || !clientSecret) {
+        return {
+            requestedProvider,
+            activeProvider,
+            soundcloudClientIdConfigured,
+            soundcloudClientSecretConfigured,
+            soundcloudConnected: false,
+            soundcloudError: "HEARDLE_SOUNDCLOUD_CLIENT_ID or HEARDLE_SOUNDCLOUD_CLIENT_SECRET is missing",
+        };
+    }
+
+    const connectivity = await checkSoundCloudConnectivity(clientId);
+    return {
+        requestedProvider,
+        activeProvider,
+        soundcloudClientIdConfigured,
+        soundcloudClientSecretConfigured,
+        soundcloudConnected: connectivity.connected,
+        soundcloudError: connectivity.error,
+    };
+}
+
 let cachedProvider: SongProvider | null = null;
 
 export function getSongProvider(): SongProvider {
@@ -339,10 +508,12 @@ export function getSongProvider(): SongProvider {
 
     if (providerId === "soundcloud") {
         const clientId = process.env.HEARDLE_SOUNDCLOUD_CLIENT_ID;
+        const clientSecret = process.env.HEARDLE_SOUNDCLOUD_CLIENT_SECRET;
 
-        if (clientId?.trim()) {
+        if (clientId?.trim() && clientSecret?.trim()) {
             cachedProvider = createSoundCloudSongProvider({
                 clientId: clientId.trim(),
+                clientSecret: clientSecret.trim(),
             });
             return cachedProvider;
         }
