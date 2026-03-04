@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Conan Gray Heardle",
-  description: "Daily and random Heardle game for guessing Conan Gray songs with SoundCloud clips.",
+  title: "Heardle",
+  description: "Daily and random Heardle game for guessing songs with SoundCloud clips.",
 };
 
 export default function RootLayout({

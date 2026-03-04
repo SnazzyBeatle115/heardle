@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { getUtcDateKey, ROUND_DURATIONS_MS, type GameMode } from "@/lib/game";
 import { getSongProvider } from "@/lib/song-provider";
-import { isArtistId, type ArtistId } from "@/lib/songs";
+import { isArtistId, type ArtistId, type Song } from "@/lib/songs";
 import { signPuzzleToken } from "@/lib/token";
 
 function parseArtists(searchParams: URLSearchParams): ArtistId[] {
@@ -17,6 +17,18 @@ function parseArtists(searchParams: URLSearchParams): ArtistId[] {
         .filter((value): value is ArtistId => isArtistId(value));
 }
 
+function getErrorMessage(error: unknown): string {
+    if (error instanceof Error && error.message.trim()) {
+        return error.message;
+    }
+
+    return "Could not create game session.";
+}
+
+function isRateLimitedMessage(message: string): boolean {
+    return /rate[- ]limited/i.test(message);
+}
+
 export async function GET(request: Request) {
     const songProvider = getSongProvider();
     const { searchParams } = new URL(request.url);
@@ -25,10 +37,27 @@ export async function GET(request: Request) {
     const mode: GameMode = modeParam === "random" ? "random" : "daily";
 
     const dateKey = getUtcDateKey();
-    const song =
-        mode === "daily"
-            ? await songProvider.pickDailySong(dateKey, selectedArtists)
-            : await songProvider.pickRandomSong(undefined, selectedArtists);
+    let song: Song;
+
+    try {
+        song =
+            mode === "daily"
+                ? await songProvider.pickDailySong(dateKey, selectedArtists)
+                : await songProvider.pickRandomSong(undefined, selectedArtists);
+    } catch (error) {
+        const message = getErrorMessage(error);
+        const rateLimited = isRateLimitedMessage(message);
+
+        return NextResponse.json(
+            {
+                error: message,
+                code: rateLimited ? "RATE_LIMITED" : "SESSION_CREATE_FAILED",
+            },
+            {
+                status: rateLimited ? 429 : 500,
+            }
+        );
+    }
 
     const token = signPuzzleToken({
         songId: song.id,

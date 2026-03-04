@@ -185,7 +185,7 @@ export const SoundCloudPlayer = forwardRef<SoundCloudPlayerHandle, Props>(
                 ) : null}
                 <iframe
                     ref={iframeRef}
-                    title="Conan Gray SoundCloud clip"
+                    title="Heardle SoundCloud clip"
                     width="100%"
                     height="160"
                     allow="autoplay"

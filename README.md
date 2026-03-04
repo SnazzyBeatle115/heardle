@@ -1,6 +1,6 @@
-# Conan Gray Heardle
+# Heardle
 
-Heardle-style web app where players guess Conan Gray songs from short SoundCloud clips.
+Heardle-style web app where players guess songs from short SoundCloud clips.
 
 ## Features
 
@@ -39,8 +39,11 @@ Open [http://localhost:3000](http://localhost:3000).
 - `HEARDLE_SONG_PROVIDER` (optional): `static` (default), `soundcloud`, or `spotify`.
 - `HEARDLE_SOUNDCLOUD_CLIENT_ID` (required when provider is `soundcloud`): SoundCloud API client id.
 - `HEARDLE_SOUNDCLOUD_CLIENT_SECRET` (required when provider is `soundcloud`): SoundCloud API client secret used for client-credentials token exchange.
+- `HEARDLE_TOKEN_STORE_DATABASE_URL` (optional, recommended in production): shared Postgres/Neon connection string for persisting SoundCloud token state across instances.
+- `HEARDLE_ENABLE_ADMIN_CACHE_CLEAR` (optional): set to `true` to allow `/api/admin/clear-cache` in production; non-production allows it by default.
 - `HEARDLE_SOUNDCLOUD_CACHE_TTL_MS` (optional): server cache duration for fetched SoundCloud tracks.
-- `HEARDLE_SOUNDCLOUD_*_PERMALINK` (optional): override artist profile permalink used for track discovery.
+- `HEARDLE_SOUNDCLOUD_ARTIST_CACHE_TTL_MS` (optional): persisted artist-track refresh window in milliseconds (default 24h) to reduce `/tracks` API calls.
+- `HEARDLE_SOUNDCLOUD_*_PERMALINK` (optional): fallback override if automatic artist-name resolution picks the wrong SoundCloud account.
 
 ## Song Catalog Notes
 
@@ -48,9 +51,11 @@ The curated song list is in `src/lib/songs.ts`.
 
 API routes now read songs through `src/lib/song-provider.ts`, which currently defaults to the static catalog and is ready for a Spotify-backed provider implementation.
 
-When `HEARDLE_SONG_PROVIDER=soundcloud`, the app authenticates with SoundCloud Client Credentials flow, fetches public tracks from each configured artist profile (via API pagination), and falls back to the static catalog if SoundCloud is unavailable.
+When `HEARDLE_SONG_PROVIDER=soundcloud`, the app authenticates with SoundCloud Client Credentials flow, auto-resolves artists by name, fetches public tracks (via API pagination), and falls back to static catalog data if SoundCloud is unavailable. If `HEARDLE_TOKEN_STORE_DATABASE_URL` is set, token/cooldown state and artist-track cache are shared via Postgres (recommended for multi-instance production), so artist track lists are refreshed on the configured cadence instead of every request.
 
-- Replace or tune `soundcloudUrl` entries with confirmed playable Conan Gray tracks.
+For fast cache invalidation while debugging, use `/api/admin/clear-cache?run=1` (or the one-click button on `/debug`). This clears in-memory provider cache and persisted artist-track cache rows.
+
+- Replace or tune `soundcloudUrl` entries with confirmed playable tracks.
 - Adjust `previewStartMs` to pick better snippets.
 
 ## Deployment (Vercel)

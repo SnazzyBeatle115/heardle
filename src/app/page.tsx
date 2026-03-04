@@ -43,6 +43,13 @@ type CatalogOption = {
   artistLabel: string;
 };
 
+type ProviderStatusResponse = {
+  activeProvider: string;
+  rateLimited: boolean;
+  rateLimitUntilIso: string | null;
+  message: string | null;
+};
+
 const EMPTY_STATS: HeardleStats = {
   totalPlayed: 0,
   totalWon: 0,
@@ -81,6 +88,7 @@ export default function Home() {
   const [todayDailyAnswer, setTodayDailyAnswer] = useState<string | null>(null);
   const [todayDailyEmbedUrl, setTodayDailyEmbedUrl] = useState<string | null>(null);
   const [selectedArtists, setSelectedArtists] = useState<ArtistId[]>(DEFAULT_SELECTED_ARTISTS);
+  const [providerStatus, setProviderStatus] = useState<ProviderStatusResponse | null>(null);
   const artistSelectionKey = useMemo(() => makeArtistSelectionKey(selectedArtists), [selectedArtists]);
 
   function toSoundCloudEmbedUrl(soundcloudUrl: string): string {
@@ -153,6 +161,30 @@ export default function Home() {
       setCatalogOptions(data.entries ?? []);
     } catch {
       setCatalogOptions([]);
+    } finally {
+      void refreshProviderStatus();
+    }
+  }
+
+  async function refreshProviderStatus(clearOnError = false) {
+    try {
+      const response = await fetch("/api/provider-status", {
+        cache: "no-store",
+      });
+
+      if (!response.ok) {
+        if (clearOnError) {
+          setProviderStatus(null);
+        }
+        return;
+      }
+
+      const data = (await response.json()) as ProviderStatusResponse;
+      setProviderStatus(data);
+    } catch {
+      if (clearOnError) {
+        setProviderStatus(null);
+      }
     }
   }
 
@@ -173,6 +205,17 @@ export default function Home() {
     }
 
     void refreshCatalog(currentArtists);
+    void refreshProviderStatus(true);
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      void refreshProviderStatus();
+    }, 60_000);
+
+    return () => {
+      window.clearInterval(interval);
+    };
   }, []);
 
   useEffect(() => {
@@ -329,7 +372,15 @@ export default function Home() {
       const response = await fetch(`/api/game?${params.toString()}`);
 
       if (!response.ok) {
-        throw new Error("Could not create game session.");
+        let message = "Could not create game session.";
+
+        try {
+          const errorData = (await response.json()) as { error?: string };
+          message = errorData.error ?? message;
+        } catch {
+        }
+
+        throw new Error(message);
       }
 
       const data = (await response.json()) as SessionData;
@@ -341,9 +392,11 @@ export default function Home() {
       setIsClipPlaying(false);
       setResultCommitted(false);
       setStatus("active");
-    } catch {
+      void refreshProviderStatus();
+    } catch (error) {
       setStatus("idle");
-      setErrorMessage("Could not start game. Please try again.");
+      setErrorMessage(error instanceof Error ? error.message : "Could not start game. Please try again.");
+      void refreshProviderStatus();
     }
   }
 
@@ -445,9 +498,9 @@ export default function Home() {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-3xl flex-col gap-6 px-4 py-10 sm:px-6">
       <header className="space-y-2">
-        <h1 className="text-3xl font-bold tracking-tight">Conan Gray Heardle</h1>
+        <h1 className="text-3xl font-bold tracking-tight">Heardle</h1>
         <p className="text-sm text-black/70 dark:text-white/70">
-          Guess the Conan Gray song using short SoundCloud clips. Daily uses a UTC reset.
+          Guess the song using short SoundCloud clips. Daily uses a UTC reset.
         </p>
       </header>
 
@@ -511,6 +564,12 @@ export default function Home() {
         {errorMessage ? (
           <p className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 dark:bg-red-950/40 dark:text-red-200">
             {errorMessage}
+          </p>
+        ) : null}
+
+        {providerStatus?.activeProvider === "soundcloud" && providerStatus.rateLimited ? (
+          <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
+            {providerStatus.message ?? "SoundCloud is currently rate-limited. Cached/static tracks are being used."}
           </p>
         ) : null}
 
@@ -598,11 +657,11 @@ export default function Home() {
               <div className="flex flex-col gap-2 sm:flex-row">
                 <input
                   id="guess"
-                  list="conan-catalog"
+                  list="song-catalog"
                   value={guessInput}
                   onChange={(event) => setGuessInput(event.target.value)}
                   disabled={status !== "active"}
-                  placeholder="Type a Conan Gray song title"
+                  placeholder="Type a song title"
                   className="w-full rounded-lg border border-black/15 bg-transparent px-3 py-2 text-sm outline-none ring-0 placeholder:text-black/40 focus:border-black/35 dark:border-white/20 dark:placeholder:text-white/40 dark:focus:border-white/40"
                 />
                 <button
@@ -613,7 +672,7 @@ export default function Home() {
                   Guess
                 </button>
               </div>
-              <datalist id="conan-catalog">
+              <datalist id="song-catalog">
                 {catalogOptions.map((entry, index) => (
                   <option
                     key={`${entry.title}-${entry.artistId}-${index}`}
