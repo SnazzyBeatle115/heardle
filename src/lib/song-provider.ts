@@ -954,32 +954,32 @@ async function getSharedSoundCloudAccessToken(
     }
 
     state.inFlight ??= fetchSoundCloudAccessToken(clientId, clientSecret)
-            .then(async (token) => {
-                state.token = token;
-                state.cooldownUntil = 0;
-                await persistSoundCloudTokenState(clientId, {
-                    token,
-                    cooldownUntil: 0,
-                });
-                return token;
-            })
-            .catch(async (error) => {
-                state.token = null;
-
-                if (error instanceof SoundCloudTokenRequestError && error.status === 429) {
-                    const waitMs = error.retryAfterMs ?? 15 * 60 * 1000;
-                    state.cooldownUntil = Date.now() + waitMs;
-                    await persistSoundCloudTokenState(clientId, {
-                        token: null,
-                        cooldownUntil: state.cooldownUntil,
-                    });
-                }
-
-                throw error;
-            })
-            .finally(() => {
-                state.inFlight = null;
+        .then(async (token) => {
+            state.token = token;
+            state.cooldownUntil = 0;
+            await persistSoundCloudTokenState(clientId, {
+                token,
+                cooldownUntil: 0,
             });
+            return token;
+        })
+        .catch(async (error) => {
+            state.token = null;
+
+            if (error instanceof SoundCloudTokenRequestError && error.status === 429) {
+                const waitMs = error.retryAfterMs ?? 15 * 60 * 1000;
+                state.cooldownUntil = Date.now() + waitMs;
+                await persistSoundCloudTokenState(clientId, {
+                    token: null,
+                    cooldownUntil: state.cooldownUntil,
+                });
+            }
+
+            throw error;
+        })
+        .finally(() => {
+            state.inFlight = null;
+        });
 
     const token = await state.inFlight;
     return token.accessToken;
