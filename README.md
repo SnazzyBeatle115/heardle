@@ -51,7 +51,7 @@ The curated song list is in `src/lib/songs.ts`.
 
 API routes now read songs through `src/lib/song-provider.ts`, which currently defaults to the static catalog and is ready for a Spotify-backed provider implementation.
 
-When `HEARDLE_SONG_PROVIDER=soundcloud`, the app authenticates with SoundCloud Client Credentials flow, auto-resolves artists by name, fetches public tracks (via API pagination), and falls back to static catalog data if SoundCloud is unavailable. If `HEARDLE_TOKEN_STORE_DATABASE_URL` is set, token/cooldown state and artist-track cache are shared via Postgres (recommended for multi-instance production), so artist track lists are refreshed on the configured cadence instead of every request.
+When `HEARDLE_SONG_PROVIDER=soundcloud`, the app authenticates with SoundCloud Client Credentials flow, auto-resolves artists by name, fetches public tracks (via API pagination), and falls back to static catalog data if SoundCloud is unavailable or an artist account has no public tracks available via the API. If `HEARDLE_TOKEN_STORE_DATABASE_URL` is set, token/cooldown state and artist-track cache are shared via Postgres (recommended for multi-instance production), so artist track lists are refreshed on the configured cadence instead of every request.
 
 For fast cache invalidation while debugging, use `/api/admin/clear-cache?run=1` (or the one-click button on `/debug`). This clears in-memory provider cache and persisted artist-track cache rows.
 

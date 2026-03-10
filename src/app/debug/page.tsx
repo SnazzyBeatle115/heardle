@@ -1,3 +1,4 @@
+import { DebugConsoleDump } from "@/components/DebugConsoleDump";
 import { ARTIST_OPTIONS, type ArtistId } from "@/lib/songs";
 import { getSongProvider, getSongProviderDebugInfo, getSoundCloudArtistLookupDebugInfo } from "@/lib/song-provider";
 
@@ -17,6 +18,12 @@ export default async function DebugPage() {
 
     const selectedArtists: ArtistId[] = ARTIST_OPTIONS.map((option) => option.id);
     const entries = await songProvider.getCatalogEntries(selectedArtists);
+    const consolePayload = {
+        generatedAt: new Date().toISOString(),
+        providerStatus: debugInfo,
+        availableSongEntries: entries,
+        artistLookup: lookupInfo,
+    };
 
     const grouped = entries.reduce<Record<string, string[]>>(
         (accumulator, entry) => {
@@ -33,6 +40,7 @@ export default async function DebugPage() {
 
     return (
         <main className="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 px-4 py-10 sm:px-6">
+            <DebugConsoleDump payload={consolePayload} />
             <header className="space-y-2">
                 <h1 className="text-3xl font-bold tracking-tight">Heardle Debug</h1>
                 <p className="text-sm text-black/70 dark:text-white/70">Provider status and available song catalog.</p>
@@ -115,6 +123,20 @@ export default async function DebugPage() {
                                 <p>Selected source: <span className="font-semibold">{artistInfo.selectedSource}</span></p>
                                 <p>Track user ref: <span className="font-mono">{artistInfo.trackUserRef ?? "N/A"}</span></p>
                                 <p className="break-all">Tracks endpoint: <span className="font-mono">{artistInfo.tracksEndpointPreview ?? "N/A"}</span></p>
+                                <p>
+                                    Selected track lookup response: <span className="font-semibold">
+                                        {artistInfo.trackLookupSelectedRef
+                                            ? `status=${artistInfo.trackLookupSelectedRef.status}, count=${artistInfo.trackLookupSelectedRef.count ?? "N/A"}`
+                                            : "N/A"}
+                                    </span>
+                                </p>
+                                <p>
+                                    Numeric ID track lookup response: <span className="font-semibold">
+                                        {artistInfo.trackLookupById
+                                            ? `status=${artistInfo.trackLookupById.status}, count=${artistInfo.trackLookupById.count ?? "N/A"}`
+                                            : "N/A"}
+                                    </span>
+                                </p>
                             </div>
 
                             {artistInfo.error ? (

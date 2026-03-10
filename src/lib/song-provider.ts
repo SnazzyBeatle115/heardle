@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { Pool } from "pg";
 import {
     ARTIST_OPTIONS,
+    filterSongsByArtists,
     getCatalogEntries,
     getCatalogTitles,
     getSongById,
@@ -158,6 +159,16 @@ type SoundCloudUserDebugEntry = {
     fullName: string | null;
 };
 
+type SoundCloudTrackLookupDebugResponse = {
+    endpoint: string;
+    status: number;
+    count: number | null;
+    nextHref: string | null;
+    sampleTitles: string[];
+    errors: unknown;
+    responseBody: unknown;
+};
+
 export type SoundCloudArtistLookupDebugInfo = {
     artistId: ArtistId;
     artistLabel: string;
@@ -170,6 +181,8 @@ export type SoundCloudArtistLookupDebugInfo = {
     selectedUser: SoundCloudUserDebugEntry | null;
     trackUserRef: string | null;
     tracksEndpointPreview: string | null;
+    trackLookupSelectedRef: SoundCloudTrackLookupDebugResponse | null;
+    trackLookupById: SoundCloudTrackLookupDebugResponse | null;
     error: string | null;
 };
 
@@ -473,7 +486,13 @@ async function readPersistedArtistTracks(artist: ArtistId, expectedUserRef: stri
             return null;
         }
 
-        return parsePersistedSongs(row.tracks_json, artist);
+        const songs = parsePersistedSongs(row.tracks_json, artist);
+
+        if (songs.length === 0) {
+            return null;
+        }
+
+        return songs;
     } catch (error) {
         sharedNeonTokenStoreInitError = error instanceof Error ? error.message : "Neon artist cache read failed";
         return null;
@@ -639,6 +658,84 @@ function choosePreferredDebugUser(
     };
 }
 
+function buildSoundCloudTracksEndpoint(userRef: string): string {
+    const endpoint = new URL(`${SOUNDCLOUD_API_BASE}/users/${encodeURIComponent(userRef)}/tracks`);
+    endpoint.searchParams.set("limit", "200");
+    endpoint.searchParams.set("linked_partitioning", "1");
+    return endpoint.toString();
+}
+
+async function fetchSoundCloudRawResponse(
+    clientId: string,
+    clientSecret: string,
+    url: string
+): Promise<{ status: number; body: unknown }> {
+    const call = async (accessToken: string) =>
+        fetch(url, {
+            headers: {
+                Accept: "application/json",
+                Authorization: `OAuth ${accessToken}`,
+            },
+            cache: "no-store",
+        });
+
+    let response = await call(await getSharedSoundCloudAccessToken(clientId, clientSecret));
+
+    if (response.status === 401 || response.status === 403) {
+        response = await call(await getSharedSoundCloudAccessToken(clientId, clientSecret, true));
+    }
+
+    if (response.status === 429) {
+        const waitMs = parseRetryAfterMs(response.headers) ?? 15 * 60 * 1000;
+        await setSoundCloudCooldown(clientId, Date.now() + waitMs);
+    }
+
+    const body = await response.json().catch(() => null);
+
+    return {
+        status: response.status,
+        body,
+    };
+}
+
+function summarizeTrackLookupDebugResponse(
+    endpoint: string,
+    status: number,
+    body: unknown
+): SoundCloudTrackLookupDebugResponse {
+    const payload = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+    const collection = Array.isArray(payload?.collection) ? payload.collection : [];
+    const count = collection.length;
+
+    const sampleTitles = collection.slice(0, 10).map((track) => {
+        if (!track || typeof track !== "object") {
+            return "<unknown>";
+        }
+
+        const title = (track as { title?: unknown }).title;
+        return typeof title === "string" ? title : "<unknown>";
+    });
+
+    const responseBody = payload
+        ? {
+            ...payload,
+            collectionTotal: count,
+            collection: collection.slice(0, 10),
+            collectionTruncated: count > 10,
+        }
+        : body;
+
+    return {
+        endpoint,
+        status,
+        count: payload ? count : null,
+        nextHref: typeof payload?.next_href === "string" ? payload.next_href : null,
+        sampleTitles,
+        errors: payload?.errors ?? null,
+        responseBody,
+    };
+}
+
 async function fetchSoundCloudJson<T>(clientId: string, clientSecret: string, url: string): Promise<T> {
     const call = async (accessToken: string) =>
         fetch(url, {
@@ -693,6 +790,8 @@ export async function getSoundCloudArtistLookupDebugInfo(): Promise<SoundCloudAr
             selectedUser: null,
             trackUserRef: null,
             tracksEndpointPreview: null,
+            trackLookupSelectedRef: null,
+            trackLookupById: null,
             error: "SoundCloud credentials are not configured",
         }));
     }
@@ -732,9 +831,36 @@ export async function getSoundCloudArtistLookupDebugInfo(): Promise<SoundCloudAr
             const permalinkResolved = resolved?.id ? toUserDebugEntry(resolved) : null;
             const { selectedUser, selectedSource } = choosePreferredDebugUser(searchBestMatch, permalinkResolved);
             const trackUserRef = selectedUser ? selectedUser.urn ?? String(selectedUser.id) : null;
-            const tracksEndpointPreview = trackUserRef
-                ? `${SOUNDCLOUD_API_BASE}/users/${encodeURIComponent(trackUserRef)}/tracks?limit=200&linked_partitioning=1`
-                : null;
+            const tracksEndpointPreview = trackUserRef ? buildSoundCloudTracksEndpoint(trackUserRef) : null;
+
+            let trackLookupSelectedRef: SoundCloudTrackLookupDebugResponse | null = null;
+
+            if (tracksEndpointPreview) {
+                const selectedLookup = await fetchSoundCloudRawResponse(clientId, clientSecret, tracksEndpointPreview);
+                trackLookupSelectedRef = summarizeTrackLookupDebugResponse(
+                    tracksEndpointPreview,
+                    selectedLookup.status,
+                    selectedLookup.body
+                );
+            }
+
+            const numericIdRef = permalinkResolved ? String(permalinkResolved.id) : selectedUser ? String(selectedUser.id) : null;
+            const idTracksEndpoint = numericIdRef ? buildSoundCloudTracksEndpoint(numericIdRef) : null;
+
+            let trackLookupById: SoundCloudTrackLookupDebugResponse | null = null;
+
+            if (idTracksEndpoint) {
+                if (trackLookupSelectedRef && idTracksEndpoint === tracksEndpointPreview) {
+                    trackLookupById = trackLookupSelectedRef;
+                } else {
+                    const byIdLookup = await fetchSoundCloudRawResponse(clientId, clientSecret, idTracksEndpoint);
+                    trackLookupById = summarizeTrackLookupDebugResponse(
+                        idTracksEndpoint,
+                        byIdLookup.status,
+                        byIdLookup.body
+                    );
+                }
+            }
 
             results.push({
                 artistId,
@@ -748,6 +874,8 @@ export async function getSoundCloudArtistLookupDebugInfo(): Promise<SoundCloudAr
                 selectedUser,
                 trackUserRef,
                 tracksEndpointPreview,
+                trackLookupSelectedRef,
+                trackLookupById,
                 error: null,
             });
         } catch (error) {
@@ -763,6 +891,8 @@ export async function getSoundCloudArtistLookupDebugInfo(): Promise<SoundCloudAr
                 selectedUser: null,
                 trackUserRef: null,
                 tracksEndpointPreview: null,
+                trackLookupSelectedRef: null,
+                trackLookupById: null,
                 error: error instanceof Error ? error.message : "Failed to inspect SoundCloud artist lookup",
             });
         }
@@ -970,13 +1100,18 @@ function createSoundCloudSongProvider(options: SoundCloudProviderOptions): SongP
     }
 
     async function fetchTracksForResolvedUser(artist: ArtistId, user: { id: number; urn?: string }): Promise<Song[]> {
-        const encodedUserRef = encodeURIComponent(user.urn ?? String(user.id));
-        const firstPage = new URL(`${SOUNDCLOUD_API_BASE}/users/${encodedUserRef}/tracks`);
-        firstPage.searchParams.set("limit", "200");
-        firstPage.searchParams.set("linked_partitioning", "1");
+        const buildTracksUrl = (userRef: string): string => {
+            const url = new URL(`${SOUNDCLOUD_API_BASE}/users/${encodeURIComponent(userRef)}/tracks`);
+            url.searchParams.set("limit", "200");
+            url.searchParams.set("linked_partitioning", "1");
+            return url.toString();
+        };
+
+        const urnRef = user.urn ?? null;
+        const idRef = String(user.id);
 
         const trackMap = new Map<string, Song>();
-        let nextUrl: string | undefined = firstPage.toString();
+        let nextUrl: string | undefined = buildTracksUrl(urnRef ?? idRef);
 
         async function collectTracksFrom(startUrl: string): Promise<void> {
             nextUrl = startUrl;
@@ -997,17 +1132,19 @@ function createSoundCloudSongProvider(options: SoundCloudProviderOptions): SongP
         }
 
         try {
-            await collectTracksFrom(firstPage.toString());
+            await collectTracksFrom(buildTracksUrl(urnRef ?? idRef));
         } catch {
-            if (!user.urn) {
+            if (!urnRef) {
                 throw new Error(`Could not fetch SoundCloud tracks for artist ${artist}`);
             }
 
-            const fallbackUrl = new URL(`${SOUNDCLOUD_API_BASE}/users/${user.id}/tracks`);
-            fallbackUrl.searchParams.set("limit", "200");
-            fallbackUrl.searchParams.set("linked_partitioning", "1");
             trackMap.clear();
-            await collectTracksFrom(fallbackUrl.toString());
+            await collectTracksFrom(buildTracksUrl(idRef));
+        }
+
+        if (trackMap.size === 0 && urnRef) {
+            trackMap.clear();
+            await collectTracksFrom(buildTracksUrl(idRef));
         }
 
         return sortSongsByTitle([...trackMap.values()]);
@@ -1045,7 +1182,12 @@ function createSoundCloudSongProvider(options: SoundCloudProviderOptions): SongP
         } catch {
         }
 
-        await persistArtistTracks(artist, tracks, userRef);
+        const staticFallbackTracks = sortSongsByTitle(filterSongsByArtists([artist]));
+
+        if (staticFallbackTracks.length > 0) {
+            await persistArtistTracks(artist, staticFallbackTracks, userRef);
+            return staticFallbackTracks;
+        }
 
         return tracks;
     }
