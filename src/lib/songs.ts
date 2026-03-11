@@ -5,6 +5,8 @@ export const ARTIST_OPTIONS = [
     { id: "conan-gray", label: "Conan Gray" },
     { id: "twenty-one-pilots", label: "Twenty One Pilots" },
     { id: "kanye-west", label: "Kanye West" },
+    { id: "hoshimachi-suisei", label: "Hoshimachi Suisei" },
+    { id: "yeat", label: "Yeat" },
 ] as const;
 
 export type ArtistId = (typeof ARTIST_OPTIONS)[number]["id"];

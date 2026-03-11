@@ -50,6 +50,8 @@ const DEFAULT_SOUNDCLOUD_PERMALINKS: Record<ArtistId, string> = {
     "conan-gray": "conan-gray",
     "twenty-one-pilots": "twentyonepilots",
     "kanye-west": "kanyewest",
+    "hoshimachi-suisei": "xingjiesuisei",
+    "yeat": "lilyeat",
 };
 
 const ARTIST_LABEL_BY_ID = new Map(ARTIST_OPTIONS.map((option) => [option.id, option.label]));
