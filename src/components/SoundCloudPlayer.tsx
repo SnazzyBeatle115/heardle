@@ -43,6 +43,7 @@ type Props = {
     clipDurationMs: number;
     disabled?: boolean;
     onClipFinished: () => void;
+    onPlaybackStarted: () => void;
 };
 
 const DEFAULT_THEME = "ff5500";
@@ -57,6 +58,7 @@ export const SoundCloudPlayer = forwardRef<SoundCloudPlayerHandle, Props>(
             clipDurationMs,
             disabled: _disabled,
             onClipFinished,
+            onPlaybackStarted,
         },
         ref,
     ) {
@@ -92,6 +94,7 @@ export const SoundCloudPlayer = forwardRef<SoundCloudPlayerHandle, Props>(
             const startPlayback = (startMs: number) => {
                 widget.seekTo(startMs);
                 widget.play();
+                onPlaybackStarted();
 
                 timeoutRef.current = globalThis.setTimeout(() => {
                     widget.pause();
@@ -119,14 +122,14 @@ export const SoundCloudPlayer = forwardRef<SoundCloudPlayerHandle, Props>(
                 selectedStartMsRef.current = clipStartMs;
                 startPlayback(clipStartMs);
             }
-        }, [clipDurationMs, clipStartMs, onClipFinished]);
+        }, [clipDurationMs, clipStartMs, onClipFinished, onPlaybackStarted]);
 
         const requestPlayback = useCallback(() => {
             const widget = widgetRef.current;
 
             if (!widget) {
                 pendingPlayRequestRef.current = true;
-                return false;
+                return true;
             }
 
             runClipPlayback(widget);
@@ -188,7 +191,7 @@ export const SoundCloudPlayer = forwardRef<SoundCloudPlayerHandle, Props>(
                     title="Heardle SoundCloud clip"
                     width="100%"
                     height="160"
-                    allow="autoplay"
+                    allow="autoplay; encrypted-media"
                     src={embedSrc}
                     className={
                         revealMetadata

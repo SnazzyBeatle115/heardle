@@ -80,6 +80,7 @@ export default function Home() {
   const [guesses, setGuesses] = useState<string[]>([]);
   const [answerTitle, setAnswerTitle] = useState<string | null>(null);
   const [isClipPlaying, setIsClipPlaying] = useState(false);
+  const [isClipLoading, setIsClipLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [dailyLocked, setDailyLocked] = useState(false);
   const [stats, setStats] = useState<HeardleStats>(EMPTY_STATS);
@@ -204,7 +205,7 @@ export default function Home() {
       void loadTodayDailyEmbed();
     }
 
-    void refreshCatalog(currentArtists);
+    void refreshCatalog(mode === "daily" ? DAILY_ARTISTS : currentArtists);
     void refreshProviderStatus(true);
   }, []);
 
@@ -223,12 +224,12 @@ export default function Home() {
       window.localStorage.setItem(ARTIST_STORAGE_KEY, JSON.stringify(selectedArtists));
     }
 
-    void refreshCatalog(selectedArtists);
+    void refreshCatalog(mode === "daily" ? DAILY_ARTISTS : selectedArtists);
 
     if (mode === "daily" && dailyLocked && !todayDailyEmbedUrl) {
       void loadTodayDailyEmbed();
     }
-  }, [selectedArtists]);
+  }, [mode, selectedArtists]);
 
   useEffect(() => {
     if (mode !== "daily") {
@@ -261,6 +262,7 @@ export default function Home() {
     setGuessInput("");
     setAnswerTitle(null);
     setIsClipPlaying(false);
+    setIsClipLoading(false);
     setResultCommitted(false);
   }, [artistSelectionKey]);
 
@@ -277,6 +279,7 @@ export default function Home() {
       setGuessInput("");
       setAnswerTitle(null);
       setIsClipPlaying(false);
+      setIsClipLoading(false);
       setResultCommitted(false);
       return;
     }
@@ -289,6 +292,7 @@ export default function Home() {
       setGuessInput("");
       setAnswerTitle(null);
       setIsClipPlaying(false);
+      setIsClipLoading(false);
       setResultCommitted(false);
       return;
     }
@@ -467,16 +471,19 @@ export default function Home() {
 
     setErrorMessage(null);
     setIsClipPlaying(true);
+    setIsClipLoading(true);
     const started = playerRef.current?.requestPlayback() ?? false;
 
     if (!started) {
       setIsClipPlaying(false);
-      setErrorMessage("Player is loading. Press Play Clip again in a second.");
+      setIsClipLoading(false);
+      setErrorMessage("Player is loading. Try again in a second.");
       return;
     }
 
     clipFallbackTimeoutRef.current = window.setTimeout(() => {
       setIsClipPlaying(false);
+      setIsClipLoading(false);
     }, activeRoundDuration + 2500);
   }
 
@@ -520,7 +527,7 @@ export default function Home() {
             disabled={status === "loading" || (mode === "daily" && dailyLocked)}
             className="rounded-lg bg-black px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white dark:text-black"
           >
-            {status === "loading" ? "Loading…" : "Start"}
+            {status === "loading" ? "Loading…" : "New Song"}
           </button>
         </div>
 
@@ -613,7 +620,9 @@ export default function Home() {
                     clipFallbackTimeoutRef.current = null;
                   }
                   setIsClipPlaying(false);
+                  setIsClipLoading(false);
                 }}
+                onPlaybackStarted={() => setIsClipLoading(false)}
               />
             ) : null}
 
@@ -638,7 +647,7 @@ export default function Home() {
                 disabled={!canPlay}
                 className="rounded-lg border border-black/15 px-4 py-2 text-sm font-semibold disabled:cursor-not-allowed disabled:opacity-50 dark:border-white/20"
               >
-                {isClipPlaying ? "Playing…" : "Play Clip"}
+                {isClipLoading ? "Loading clip…" : isClipPlaying ? "Playing…" : "Play Clip"}
               </button>
               <button
                 type="button"
@@ -677,7 +686,9 @@ export default function Home() {
                   <option
                     key={`${entry.title}-${entry.artistId}-${index}`}
                     value={entry.title}
-                    label={selectedArtists.length > 1 ? `${entry.title} — ${entry.artistLabel}` : entry.title}
+                    label={mode === "random" && selectedArtists.length > 1
+                      ? `${entry.title} — ${entry.artistLabel}`
+                      : entry.title}
                   />
                 ))}
               </datalist>
