@@ -418,7 +418,7 @@ function parsePersistedSongs(raw: unknown, artist: ArtistId): Song[] {
         return [];
     }
 
-    return raw
+    const songs = raw
         .map((item) => {
             if (!item || typeof item !== "object") {
                 return null;
@@ -446,7 +446,10 @@ function parsePersistedSongs(raw: unknown, artist: ArtistId): Song[] {
                 previewStartMs: candidate.previewStartMs,
             } as Song;
         })
-        .filter((value): value is Song => value !== null);
+        .filter((value): value is Song => value !== null)
+        .filter((song) => !isAlternateTrackVersion(song.title));
+
+    return deduplicateSongsByTitle(songs);
 }
 
 async function readPersistedArtistTracks(artist: ArtistId, expectedUserRef: string): Promise<Song[] | null> {
@@ -996,8 +999,13 @@ function toPreviewStartMs(durationMs?: number): number {
     return Math.min(SOUNDCLOUD_DEFAULT_PREVIEW_START_MS, maxStart);
 }
 
+function isAlternateTrackVersion(title: string): boolean {
+    return /\b(live|acoustic|remix|remaster(?:ed)?|radio edit|karaoke|instrumental|demo|cover|sped up|slowed|extended mix)\b/i.test(title)
+        || /\b(?:live|acoustic|remix|edit|version)\b.*\b(?:mexico city|session|version)\b/i.test(title);
+}
+
 function parseSoundCloudTrackToSong(track: SoundCloudTrack, artist: ArtistId): Song | null {
-    if (!track?.id || !track?.title || !track?.permalink_url) {
+    if (!track?.id || !track?.title || !track?.permalink_url || isAlternateTrackVersion(track.title)) {
         return null;
     }
 
@@ -1015,6 +1023,21 @@ function sortSongsByTitle(songs: Song[]): Song[] {
     return [...songs].sort((left, right) => {
         const byTitle = left.title.localeCompare(right.title);
         return byTitle !== 0 ? byTitle : left.id.localeCompare(right.id);
+    });
+}
+
+function deduplicateSongsByTitle(songs: Song[]): Song[] {
+    const seenTitles = new Set<string>();
+
+    return songs.filter((song) => {
+        const normalizedTitle = normalizeForMatch(song.title);
+
+        if (seenTitles.has(normalizedTitle)) {
+            return false;
+        }
+
+        seenTitles.add(normalizedTitle);
+        return true;
     });
 }
 
@@ -1149,7 +1172,7 @@ function createSoundCloudSongProvider(options: SoundCloudProviderOptions): SongP
             await collectTracksFrom(buildTracksUrl(idRef));
         }
 
-        return sortSongsByTitle([...trackMap.values()]);
+        return sortSongsByTitle(deduplicateSongsByTitle([...trackMap.values()]));
     }
 
     async function fetchArtistTracks(artist: ArtistId): Promise<Song[]> {
